@@ -40,7 +40,7 @@ It is a **library** intended to be used by:
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/yourname/naviplay-linux.git
+git clone https://github.com/KingVentrix007/naviplay-linux.git
 cd naviplay-linux
 pip install -r requirements.txt
 ```
