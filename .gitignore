@@ -1,0 +1,8 @@
+*.bin
+*.env
+cache.json
+cache/
+venv/
+__pycache__/
+*.pyc
+downloads/
