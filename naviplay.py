@@ -1,9 +1,10 @@
-import requests
 from urllib.parse import urlencode
 import hashlib, random
 import json
-import time
+import asyncio
+import httpx
 import os
+import aiofiles
 class NavidromeClient:
     def __init__(
         self,
@@ -26,12 +27,23 @@ class NavidromeClient:
         self.songs = []
         self.cache_path = cache_path
         self.cache_data = None
-        self._load_cache()
+        self.cache_loaded = False
+        self.que_list = []
+        self.preloaded_song_id = None
+        self.curr_preload_buffer = 1
+        self.preload_buffer = asyncio.Queue()
+        # self.preload_buffer2 = asyncio.Queue(maxsize=50)
+
+    async def quick_init(self):
+        self.cache_loaded = True
+        await self._load_cache()
+        
+
     def _auth_params(self):
         salt = str(random.randint(1000, 9999))
         token = hashlib.md5((self.password + salt).encode()).hexdigest()
         return salt, token
-    def _call(self, endpoint, extra_params=None):
+    async def _call(self, endpoint, extra_params=None):
         salt, token = self._auth_params()
         params = {
             "u": self.username,
@@ -45,40 +57,44 @@ class NavidromeClient:
             params.update(extra_params)
 
         url = f"{self.base_url}/{endpoint}.view?{urlencode(params)}"
-        r = requests.get(url, timeout=self.timeout)
-        r.raise_for_status()
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url)
 
         data = r.json()["subsonic-response"]
         if data.get("status") != "ok":
             raise RuntimeError(data.get("error", {}).get("message", "Unknown error"))
 
         return data
-    def _get_library_timestamp(self):
-        resp = self._call("getIndexes")
+    async def _get_library_timestamp(self):
+        resp = await self._call("getIndexes")
         return resp["indexes"].get("lastModified")
-    def _load_cache(self):
+    
+    async def _load_cache(self):
+        # if(self.cache_loaded == True):
+        #     return
         if(self.cache_path == None):
             raise FileExistsError("Please Provide a cache path")
         with open(self.cache_path,"r") as cache_file:
             try:
                 cache_data = json.load(cache_file)
-            except json.JSONDecodeError:
-                print("DC err")
+            except json.JSONDecodeError as je:
+                print("json decode err",je)
                 cache_data = {"lastUpdate":"-1","cachedSongs":{}}
-            self.cache_data = cache_data
-            cached_songs = self.cache_data["cachedSongs"]
-            server_timestamp = self._get_library_timestamp()
-            server_ts = int(self._get_library_timestamp())
-            cache_ts  = int(self.cache_data["lastUpdate"])
+        with open(self.cache_path,"w") as cache_file:
+            json.dump(cache_data,cache_file)
+        self.cache_data = cache_data
+        cached_songs = self.cache_data["cachedSongs"]
+        server_ts = int(await self._get_library_timestamp())
+        cache_ts  = int(self.cache_data["lastUpdate"])
 
-            if abs(server_ts - cache_ts) < 2:
-                for k in cached_songs.keys():
-                    song = cached_songs.get(k,{})
-                    self.songs.append(song)
-            else:
-                self._get_all_songs(False)
-                self._cache()
-    def _cache(self):
+        if abs(server_ts - cache_ts) < 2:
+            for k in cached_songs.keys():
+                song = cached_songs.get(k,{})
+                self.songs.append(song)
+        else:
+            await self._get_all_songs(False)
+            await self._cache()
+    async def _cache(self):
         for song in self.songs:
             artists = []
             for art in song.get("artists",[]):
@@ -96,16 +112,16 @@ class NavidromeClient:
                 pass
             cache_entry = {"title":song.get("title"),"id":song.get("id"),"coverArt":song.get("coverArt"),"artists":artists,"timesPlayed":timesPlayed,"downloaded":downLoaded,"cache_path":cache_path}
             self.cache_data["cachedSongs"][song.get("id","-1")] = cache_entry
-        self.cache_data["lastUpdate"] = self._get_library_timestamp()
+        self.cache_data["lastUpdate"] = await self._get_library_timestamp()
         with open(self.cache_path,"w") as cache_file:
             json.dump(self.cache_data,cache_file)
     # def _load_cache(self):
-    def _update_timesPlayed(self,song_id):
+    async def _update_timesPlayed(self,song_id):
         tp = int(self.cache_data["cachedSongs"][song_id].get("timesPlayed"))
         tp+=1
         downLoaded =  self.cache_data["cachedSongs"][song_id].get("downloaded",False)
         if(tp > 5 and downLoaded == False):
-            d_path = self._download_song(song_id)
+            d_path = await self._download_song(song_id)
             self.cache_data["cachedSongs"][song_id]["downloaded"] = True
             self.cache_data["cachedSongs"][song_id]["cache_path"] = d_path
 
@@ -121,7 +137,7 @@ class NavidromeClient:
             if(song.get("id",-1) == song_id):
                 return song.get("title")
         return None
-    def _download_song_cover(self,song_id,cache=False):
+    async def _download_song_cover(self,song_id,cache=False):
         song = self._get_song_by_id(song_id)
         if(song == None):
             return None
@@ -134,13 +150,15 @@ class NavidromeClient:
         else:
             d_path = f"cache/{cover_id}.bin"
             
-        r = requests.get(url, params=server_params, stream=True)
-        r.raise_for_status()
-        with open(d_path, "wb") as f:
-            for chunk in r.iter_content(8192):
-                if chunk:
-                    f.write(chunk)
-    def _get_song_cover(self,song_id):
+        async with httpx.AsyncClient() as client:
+            async with client.stream("GET", url, params=server_params) as r:
+                r.raise_for_status()
+                with open(d_path, "wb") as f:
+                    async for chunk in r.aiter_bytes(8192):
+                        f.write(chunk)
+
+        return d_path
+    async def _get_song_cover(self,song_id):
         song = self._get_song_by_id(song_id)
         if(song == None):
             return None
@@ -151,9 +169,9 @@ class NavidromeClient:
         else:
             if(os.path.exists("cache") != True):
                 os.mkdir(f"cache")
-            self._download_song_cover(song_id=song_id,cache=True)
+            await self._download_song_cover(song_id=song_id,cache=True)
             return  f"cache/{cover_id}.bin"
-    def _download_song(self,song_id):
+    async def _download_song(self,song_id):
         print("Downloading")
         # song_name = self._get_song_name(song_id).replace(" ","_")
         stream_params = self._get_server_parmas()
@@ -161,18 +179,17 @@ class NavidromeClient:
         url = f"{self.base_url}/download.view"
         os.mkdir(f"downloads/{song_id}")
         d_path = f"downloads/{song_id}/{song_id}.bin"
-        r = requests.get(url, params=stream_params, stream=True)
-        r.raise_for_status()
+        async with httpx.AsyncClient() as client:
+            async with client.stream("GET", url, params=stream_params) as r:
+                r.raise_for_status()
+                with open(d_path, "wb") as f:
+                    async for chunk in r.aiter_bytes(8192):
+                        f.write(chunk)
 
-        with open(d_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-        self._download_song_cover(song_id)
-        print("Download Done")
+                await self._download_song_cover(song_id)
+                print("Download Done")
         return d_path
     def _get_server_parmas(self):
-        # self._update_timesPlayed(song_id)
         salt, token = self._auth_params()
         stream_params = {
         "u": self.username,
@@ -201,12 +218,13 @@ class NavidromeClient:
     # ---------- High-level API ----------
     
     
-    def get_all_albums(self):
+    async def get_all_albums(self):
+        
         albums = []
         offset = 0
 
         while True:
-            resp = self._call(
+            resp = await self._call(
                 "getAlbumList2",
                 {
                     "type": "alphabeticalByName",
@@ -224,41 +242,46 @@ class NavidromeClient:
 
         return albums
 
-    def get_album(self, album_id):
-        resp = self._call("getAlbum", {"id": album_id})
+    async def get_album(self, album_id):
+        
+        resp = await self._call("getAlbum", {"id": album_id})
         return resp["album"]
 
-    def get_songs_for_album(self, album_id):
-        album = self.get_album(album_id)
+    async def get_songs_for_album(self, album_id):
+        
+        album = await self.get_album(album_id)
         return album.get("song", [])
 
-    def _get_all_songs(self, progress=False):
+    async def _get_all_songs(self, progress=False):
+        # if(self.cache_loaded == False):
+        #     await self._load_cache()
+        #     self.cache_loaded = True
         all_songs = []
-        albums = self.get_all_albums()
+        albums = await self.get_all_albums()
 
         if progress:
             print(f"Found {len(albums)} albums")
 
         for i, album in enumerate(albums, 1):
-            songs = self.get_songs_for_album(album["id"])
+            songs = await self.get_songs_for_album(album["id"])
             all_songs.extend(songs)
 
             if progress:
                 print(f"[{i}/{len(albums)}] {album['name']} → {len(songs)} songs")
         self.songs = all_songs
         return all_songs
-    def get_all_songs(self):
+    async def get_all_songs(self):
         return self.songs
-    def get_song_id(self,title):
+    async def get_song_id(self,title):
+        
         for song in self.songs:
             if(song.get("title","invalid") == title):
                 return song.get("id",None)
-    def get_bit_stream(self,song_name):
-        song_id = self.get_song_id(song_name)
+    async def _get_bit_stream(self,song_id,is_pre_pull=False):
+        
+        # song_id = await self.get_song_id(song_name)
         print(song_id)
-        if(song_id == None):
-            return
-        self._update_timesPlayed(song_id)
+        
         isdown,file = self._is_downloaded(song_id)
         if(isdown == True):
             print("using download")
@@ -269,15 +292,71 @@ class NavidromeClient:
             stream_params = self._get_server_parmas()
             stream_params["id"] = song_id
             url = f"{self.base_url}/stream.view"
-            r = requests.get(url, params=stream_params, stream=True)
-            r.raise_for_status()
-
-            for chunk in r.iter_content(8192):
-                if chunk:
+            if self.preloaded_song_id == song_id and is_pre_pull == False:
+                print("Using preload song")
+                while True:
+                    chunk = await self.preload_buffer.get()
+                    if chunk is None:
+                        break
                     yield chunk
-    def get_cover_art(self,song_id):
+                print("Preload song complete")
+                return
+            else:
+                async with httpx.AsyncClient() as client:
+                    async with client.stream("GET", url, params=stream_params) as r:
+                        r.raise_for_status()
+                        async for chunk in r.aiter_bytes(8192):
+                            #  f.write(chunk)
+                                yield chunk
+    async def get_cover_art(self,song_id):
+        
         ca_file_path = self._get_song_cover(song_id)
         if(ca_file_path == None):
             return None
         with open(ca_file_path,"rb") as file:
             return file.read()
+    def create_que(self,first_song_id):
+        temp_q = [first_song_id]
+        for s in self.songs:
+            if(s.get("id",-1) == first_song_id):
+                continue
+            temp_q.append(s.get("id",-1))
+        self.que_list = temp_q
+    async def preload_next_song(self, song_id):
+        self.preloaded_song_id = song_id
+        print("preloading song:",song_id)
+        try:
+            stream = self._get_bit_stream(song_id,is_pre_pull=True)
+            async for chunk in stream:
+                await self.preload_buffer.put(chunk)
+        finally:
+            await self.preload_buffer.put(None)
+            print("preloaded song")
+    async def get_songs_stream(self,song_name):
+        #Returns a song bit stream and creates a que
+        
+        
+        song_id = await self.get_song_id(song_name)
+        await self._update_timesPlayed(song_id)
+        if(song_id == None):
+            return
+        song_bit_stream = self._get_bit_stream(song_id)
+        self.create_que(song_id)
+        if len(self.que_list) > 1:
+            asyncio.create_task(
+                self.preload_next_song(self.que_list[1])
+            )
+        async for chunk in song_bit_stream:
+            yield chunk
+        for x in range(1,len(self.que_list)):
+            current_song_id = self.que_list[x]
+            if(x+1 <=len(self.que_list)):
+                next_song_id = self.que_list[x+1]
+            else:
+                next_song_id = -1
+            # asyncio.create_task(self.preload_next_song(next_song_id))
+            song_bit_stream = self._get_bit_stream(current_song_id)
+            async for chunk in song_bit_stream:
+                yield chunk
+
+        print("song done")

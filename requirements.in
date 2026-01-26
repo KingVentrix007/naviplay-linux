@@ -1,3 +1,6 @@
 PyQt6
 dotenv
 requests
+aiofiles
+httpx
+asyncio

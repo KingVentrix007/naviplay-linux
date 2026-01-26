@@ -1,12 +1,10 @@
 import os
 import sys
 from dotenv import load_dotenv
-from PyQt6.QtWidgets import QApplication
-
+import asyncio
 from naviplay import NavidromeClient
-from gui import MusicPlayerGUI
-
-def main():
+import subprocess
+async def main():
     load_dotenv()  # loads .env into os.environ
 
     base_url = os.getenv("NAVIDROME_URL")
@@ -17,7 +15,7 @@ def main():
     if not all([base_url, username, password]):
         print("❌ Missing Navidrome configuration.")
         print("Please set NAVIDROME_URL, NAVIDROME_USER, NAVIDROME_PASS")
-        sys.exit(1)
+        # sys.exit(1)
 
     client = NavidromeClient(
         base_url=base_url,
@@ -26,12 +24,28 @@ def main():
         client=client_name,
         cache_path="./cache.json"
     )
+    await client.quick_init()
+    songs = await client.get_all_songs()
+    # print(songs)
+    play_song = songs[4]
 
-    app = QApplication(sys.argv)
-    window = MusicPlayerGUI(client)
-    window.show()
-    sys.exit(app.exec())
+    proc = await asyncio.create_subprocess_exec(
+    "ffplay",
+    "-nodisp",
+    "-autoexit",
+    "-i",
+    "pipe:0",
+    stdin=asyncio.subprocess.PIPE,
+)
 
+    stream = client.get_songs_stream(play_song["title"])
+
+    async for chunk in stream:
+        proc.stdin.write(chunk)
+        await proc.stdin.drain()   # <-- critical
+
+    proc.stdin.close()
+    await proc.wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
