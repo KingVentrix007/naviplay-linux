@@ -31,8 +31,7 @@ class NavidromeClient:
         self.que_list = []
         self.preloaded_song_id = None
         self.curr_preload_buffer = 1
-        self.preload_buffer = asyncio.Queue()
-        # self.preload_buffer2 = asyncio.Queue(maxsize=50)
+        self.preloaded_songs: dict[str, asyncio.Queue] = {}
 
     async def quick_init(self):
         self.cache_loaded = True
@@ -121,9 +120,9 @@ class NavidromeClient:
         tp+=1
         downLoaded =  self.cache_data["cachedSongs"][song_id].get("downloaded",False)
         if(tp > 5 and downLoaded == False):
-            d_path = await self._download_song(song_id)
-            self.cache_data["cachedSongs"][song_id]["downloaded"] = True
-            self.cache_data["cachedSongs"][song_id]["cache_path"] = d_path
+            asyncio.create_task(self._download_song(song_id))
+            # self.cache_data["cachedSongs"][song_id]["downloaded"] = True
+            # self.cache_data["cachedSongs"][song_id]["cache_path"] = d_path
 
             
         self.cache_data["cachedSongs"][song_id]["timesPlayed"] = tp
@@ -188,7 +187,11 @@ class NavidromeClient:
 
                 await self._download_song_cover(song_id)
                 print("Download Done")
-        return d_path
+        self.cache_data["cachedSongs"][song_id]["downloaded"] = True
+        self.cache_data["cachedSongs"][song_id]["cache_path"] = d_path
+        with open(self.cache_path,"w") as cache_file:
+            json.dump(self.cache_data,cache_file)
+        # return d_path
     def _get_server_parmas(self):
         salt, token = self._auth_params()
         stream_params = {
@@ -277,37 +280,39 @@ class NavidromeClient:
         for song in self.songs:
             if(song.get("title","invalid") == title):
                 return song.get("id",None)
-    async def _get_bit_stream(self,song_id,is_pre_pull=False):
-        
-        # song_id = await self.get_song_id(song_name)
+    async def _get_bit_stream(self, song_id, is_pre_pull=False):
         print(song_id)
-        
-        isdown,file = self._is_downloaded(song_id)
-        if(isdown == True):
+
+        isdown, file = self._is_downloaded(song_id)
+        if isdown:
             print("using download")
             with open(file, "rb") as f:
                 while chunk := f.read(8192):
                     yield chunk
-        else:
-            stream_params = self._get_server_parmas()
-            stream_params["id"] = song_id
-            url = f"{self.base_url}/stream.view"
-            if self.preloaded_song_id == song_id and is_pre_pull == False:
-                print("Using preload song")
-                while True:
-                    chunk = await self.preload_buffer.get()
-                    if chunk is None:
-                        break
+            return
+
+        stream_params = self._get_server_parmas()
+        stream_params["id"] = song_id
+        url = f"{self.base_url}/stream.view"
+
+        if song_id in self.preloaded_songs and not is_pre_pull:
+            print("Using preload song")
+            queue = self.preloaded_songs[song_id]
+
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                yield chunk
+
+            print("Preload song complete")
+            return
+
+        async with httpx.AsyncClient() as client:
+            async with client.stream("GET", url, params=stream_params) as r:
+                r.raise_for_status()
+                async for chunk in r.aiter_bytes(8192):
                     yield chunk
-                print("Preload song complete")
-                return
-            else:
-                async with httpx.AsyncClient() as client:
-                    async with client.stream("GET", url, params=stream_params) as r:
-                        r.raise_for_status()
-                        async for chunk in r.aiter_bytes(8192):
-                            #  f.write(chunk)
-                                yield chunk
     async def get_cover_art(self,song_id):
         
         ca_file_path = self._get_song_cover(song_id)
@@ -323,14 +328,18 @@ class NavidromeClient:
             temp_q.append(s.get("id",-1))
         self.que_list = temp_q
     async def preload_next_song(self, song_id):
+        # self.preloaded_song_id = song_id
+        queue = asyncio.Queue()
+        self.preloaded_songs[song_id] = queue
         self.preloaded_song_id = song_id
         print("preloading song:",song_id)
         try:
             stream = self._get_bit_stream(song_id,is_pre_pull=True)
             async for chunk in stream:
-                await self.preload_buffer.put(chunk)
+                await queue.put(chunk)
         finally:
-            await self.preload_buffer.put(None)
+            await queue.put(None) 
+
             print("preloaded song")
     async def get_songs_stream(self,song_name):
         #Returns a song bit stream and creates a que
@@ -354,7 +363,7 @@ class NavidromeClient:
                 next_song_id = self.que_list[x+1]
             else:
                 next_song_id = -1
-            # asyncio.create_task(self.preload_next_song(next_song_id))
+            asyncio.create_task(self.preload_next_song(next_song_id))
             song_bit_stream = self._get_bit_stream(current_song_id)
             async for chunk in song_bit_stream:
                 yield chunk
