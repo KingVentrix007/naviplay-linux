@@ -176,7 +176,10 @@ class NavidromeClient:
         stream_params = self._get_server_parmas()
         stream_params["id"] = song_id
         url = f"{self.base_url}/download.view"
-        os.mkdir(f"downloads/{song_id}")
+        if(os.path.exists(f"downloads/{song_id}")):
+            pass
+        else:
+            os.mkdir(f"downloads/{song_id}")
         d_path = f"downloads/{song_id}/{song_id}.bin"
         async with httpx.AsyncClient() as client:
             async with client.stream("GET", url, params=stream_params) as r:
@@ -306,6 +309,7 @@ class NavidromeClient:
                 yield chunk
 
             print("Preload song complete")
+
             return
 
         async with httpx.AsyncClient() as client:

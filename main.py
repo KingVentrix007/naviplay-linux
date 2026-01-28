@@ -25,9 +25,9 @@ async def main():
         cache_path="./cache.json"
     )
     await client.quick_init()
-    songs = await client.get_all_songs()
-    # print(songs)
-    play_song = songs[4]
+    songs = await client._get_all_songs()
+    print(songs[0])
+    play_song = songs[0]
 
     proc = await asyncio.create_subprocess_exec(
     "ffplay",
@@ -36,6 +36,8 @@ async def main():
     "-i",
     "pipe:0",
     stdin=asyncio.subprocess.PIPE,
+    # stderr=asyncio.subprocess.DEVNULL,
+    # stdout=asyncio.subprocess.DEVNULL,
 )
 
     stream = client.get_songs_stream(play_song["title"])
