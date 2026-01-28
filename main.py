@@ -36,11 +36,11 @@ async def main():
     "-i",
     "pipe:0",
     stdin=asyncio.subprocess.PIPE,
-    # stderr=asyncio.subprocess.DEVNULL,
-    # stdout=asyncio.subprocess.DEVNULL,
+    stderr=asyncio.subprocess.DEVNULL,
+    stdout=asyncio.subprocess.DEVNULL,
 )
 
-    stream = client.get_songs_stream(play_song["title"])
+    stream = client.get_songs_stream(play_song["title"],"cat")
 
     async for chunk in stream:
         proc.stdin.write(chunk)

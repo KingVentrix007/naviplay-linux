@@ -5,6 +5,14 @@ import asyncio
 import httpx
 import os
 import aiofiles
+import sys
+import warnings
+STREAM_OUTPUT = "007stream007"
+CLI_OUTPUT = "007client007"
+FILE_OUTPUT = "007file007"
+
+
+
 class NavidromeClient:
     def __init__(
         self,
@@ -345,9 +353,39 @@ class NavidromeClient:
             await queue.put(None) 
 
             print("preloaded song")
-    async def get_songs_stream(self,song_name):
+    async def _write_to_output_file(self,data,first_write=False):
+        if(first_write == True):
+            with open("temp/output.mp3","wb") as f:
+                if(data == None):
+                    return
+                f.write(data)
+        else:
+             with open("temp/output.mp3","ab") as f:
+                f.write(data)
+    def _match_output(self,string):
+        if string.lower() in CLI_OUTPUT.lower():
+            return CLI_OUTPUT,"cli"
+        elif string.lower() in FILE_OUTPUT.lower():
+            return FILE_OUTPUT,"file"
+        elif string.lower() in STREAM_OUTPUT.lower():
+            return STREAM_OUTPUT,"stream"
+        else:
+            return None,None
+    async def get_songs_stream(self,song_name,output=STREAM_OUTPUT):
         #Returns a song bit stream and creates a que
+        r_out = output
+        if(output[:3] != "007"):
+            warnings.warn("You have used a string to specify the output. This is not recommened as we may change the output types at a future date. To future proof your code, please use on of the constants we made", stacklevel=2)
+            out,t = self._match_output(r_out)
+            if(out == None):
+                warnings.warn(f"We tried to match you input '{output}' to one of our formats but failed. We are defaulting to file output. And because you obviously didn't read the docs. That outout it temp/song.mp3",stacklevel=2)
+                r_out = FILE_OUTPUT
+            else:
+                warnings.warn(f"We tried to match you input '{output}' to one of our formats and succeeded. You song data will be sent to output {t}. Was it worth being diffrent and ignoring the perfectly good, and future proofed constants we gave you? If you said yes, come back to this when your code stops working after a version update ",stacklevel=2)
         
+                r_out = out
+        if(r_out == FILE_OUTPUT):
+                await self._write_to_output_file(None,True)
         
         song_id = await self.get_song_id(song_name)
         await self._update_timesPlayed(song_id)
@@ -360,7 +398,12 @@ class NavidromeClient:
                 self.preload_next_song(self.que_list[1])
             )
         async for chunk in song_bit_stream:
-            yield chunk
+            if(r_out == STREAM_OUTPUT):
+                yield chunk
+            elif(r_out == CLI_OUTPUT):
+                sys.stdout.buffer.write(chunk)
+            elif(r_out == FILE_OUTPUT):
+                await self._write_to_output_file(chunk)
         for x in range(1,len(self.que_list)):
             current_song_id = self.que_list[x]
             if(x+1 <=len(self.que_list)):
@@ -370,6 +413,11 @@ class NavidromeClient:
             asyncio.create_task(self.preload_next_song(next_song_id))
             song_bit_stream = self._get_bit_stream(current_song_id)
             async for chunk in song_bit_stream:
-                yield chunk
+                if(r_out == STREAM_OUTPUT):
+                    yield chunk
+                elif(r_out == CLI_OUTPUT):
+                    sys.stdout.buffer.write(chunk)
+                elif(r_out == FILE_OUTPUT):
+                    await self._write_to_output_file(chunk)
 
         print("song done")
