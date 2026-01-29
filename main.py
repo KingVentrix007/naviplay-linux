@@ -2,7 +2,7 @@ import os
 import sys
 from dotenv import load_dotenv
 import asyncio
-from naviplay import NavidromeClient
+from naviplay import NavidromeClient,STREAM_OUTPUT
 import subprocess
 async def main():
     load_dotenv()  # loads .env into os.environ
@@ -25,10 +25,11 @@ async def main():
         cache_path="./cache.json"
     )
     await client.quick_init()
-    songs = await client._get_all_songs()
-    print(songs[0])
+    songs = await client.get_all_songs()
+    # print(songs)
     play_song = songs[0]
-
+    song_name = await client.get_song_name_by_id(play_song)
+    print(f"main.py: Playing song: {song_name}")
     proc = await asyncio.create_subprocess_exec(
     "ffplay",
     "-nodisp",
@@ -40,7 +41,7 @@ async def main():
     stdout=asyncio.subprocess.DEVNULL,
 )
 
-    stream = client.get_songs_stream(play_song["title"],"cat")
+    stream = client.get_song_stream(play_song,STREAM_OUTPUT)
 
     async for chunk in stream:
         proc.stdin.write(chunk)
