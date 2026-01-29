@@ -268,45 +268,6 @@ class NavidromeClient:
             return True,song.get("cache_path",None)
         return False,None
     
-    
-
-    # ---------- High-level API ----------
-    
-    
-    async def get_all_albums(self):
-        
-        albums = []
-        offset = 0
-
-        while True:
-            resp = await self._call(
-                "getAlbumList2",
-                {
-                    "type": "alphabeticalByName",
-                    "size": self.page_size,
-                    "offset": offset,
-                },
-            )
-
-            batch = resp["albumList2"].get("album", [])
-            if not batch:
-                break
-
-            albums.extend(batch)
-            offset += self.page_size
-
-        return albums
-
-    async def get_album(self, album_id):
-        
-        resp = await self._call("getAlbum", {"id": album_id})
-        return resp["album"]
-
-    async def get_songs_for_album(self, album_id):
-        
-        album = await self.get_album(album_id)
-        return album.get("song", [])
-
     async def _get_all_songs(self, progress=False):
         logger.debug("Getting ALL songs. See doc section '_get_all_songs'")
         all_songs = []
@@ -323,18 +284,6 @@ class NavidromeClient:
                 logger.debug(f"[{i}/{len(albums)}] {album['name']} → {len(songs)} songs")
         self.songs = all_songs
         return all_songs
-    async def get_all_songs(self):
-        cachedSongs = self.cache_data.get("cachedSongs",{})
-        if(cachedSongs == {}):
-            logger.warning("Cache is empty")
-        else:
-            songs = cachedSongs.keys()
-            return list(songs)
-    async def get_song_id(self,title):
-        
-        for song in self.songs:
-            if(song.get("title","invalid") == title):
-                return song.get("id",None)
     async def _get_bit_stream(self, song_id, is_pre_pull=False):
         logger.debug(f"Getting bit stream for: {song_id}")
         isdown, file = self._is_downloaded(song_id)
@@ -381,33 +330,6 @@ class NavidromeClient:
                 
             else:
                 logger.error(f"Getting bit stream for song [{song_id}] failed with ReadTimeout error to url: {url}",stacklevel=2)
-    async def get_cover_art(self,song_id):
-        
-        ca_file_path = self._get_song_cover(song_id)
-        if(ca_file_path == None):
-            return None
-        with open(ca_file_path,"rb") as file:
-            return file.read()
-    def create_que(self,first_song_id):
-        temp_q = [first_song_id]
-        for s in self.cache_data["cachedSongs"]:
-            if(s == first_song_id):
-                continue
-            temp_q.append(s)
-        self.que_list = temp_q
-    async def preload_next_song(self, song_id):
-        queue = asyncio.Queue()
-        self.preloaded_songs[song_id] = queue
-        self.preloaded_song_id = song_id
-        logger.debug(f"Preloading song {song_id}")
-        try:
-            stream = self._get_bit_stream(song_id,is_pre_pull=True)
-            async for chunk in stream:
-                await queue.put(chunk)
-        finally:
-            await queue.put(None) 
-
-            logger.debug(f"Completed Preloading song: {song_id}")
     async def _write_to_output_file(self,data,first_write=False):
         if(first_write == True):
             with open("temp/output.mp3","wb") as f:
@@ -439,6 +361,107 @@ class NavidromeClient:
         
                 r_out = out
         return r_out
+    
+
+    async def _get_all_playlists(self):
+        # Gets a list of all the users playlists
+        data = await self._call("getPlaylists")
+        playlists_all_data =  data.get("playlists", {}).get("playlist", [])
+        # print(playlists)
+        playlists = []
+        for p in playlists_all_data:
+            playlists.append(p.get("id",-1))
+        if(playlists != []):
+            return playlists
+    async def _get_playlist_data(self, playlist_id):
+        if(playlist_id == -1):
+            return []
+        data = await self._call(
+            "getPlaylist",
+            extra_params={"id": playlist_id}
+        )
+        return data["playlist"]
+
+
+    # ---------- High-level API ----------
+    
+    
+    async def get_all_albums(self):
+        
+        albums = []
+        offset = 0
+
+        while True:
+            resp = await self._call(
+                "getAlbumList2",
+                {
+                    "type": "alphabeticalByName",
+                    "size": self.page_size,
+                    "offset": offset,
+                },
+            )
+
+            batch = resp["albumList2"].get("album", [])
+            if not batch:
+                break
+
+            albums.extend(batch)
+            offset += self.page_size
+
+        return albums
+
+    async def get_album(self, album_id):
+        
+        resp = await self._call("getAlbum", {"id": album_id})
+        return resp["album"]
+
+    async def get_songs_for_album(self, album_id):
+        
+        album = await self.get_album(album_id)
+        return album.get("song", [])
+
+    
+    async def get_all_songs(self):
+        cachedSongs = self.cache_data.get("cachedSongs",{})
+        if(cachedSongs == {}):
+            logger.warning("Cache is empty")
+        else:
+            songs = cachedSongs.keys()
+            return list(songs)
+    async def get_song_id(self,title):
+        
+        for song in self.songs:
+            if(song.get("title","invalid") == title):
+                return song.get("id",None)
+    
+    async def get_cover_art(self,song_id):
+        
+        ca_file_path = self._get_song_cover(song_id)
+        if(ca_file_path == None):
+            return None
+        with open(ca_file_path,"rb") as file:
+            return file.read()
+    def create_que(self,first_song_id):
+        temp_q = [first_song_id]
+        for s in self.cache_data["cachedSongs"]:
+            if(s == first_song_id):
+                continue
+            temp_q.append(s)
+        self.que_list = temp_q
+    async def preload_next_song(self, song_id):
+        queue = asyncio.Queue()
+        self.preloaded_songs[song_id] = queue
+        self.preloaded_song_id = song_id
+        logger.debug(f"Preloading song {song_id}")
+        try:
+            stream = self._get_bit_stream(song_id,is_pre_pull=True)
+            async for chunk in stream:
+                await queue.put(chunk)
+        finally:
+            await queue.put(None) 
+
+            logger.debug(f"Completed Preloading song: {song_id}")
+    
     async def get_songs_stream(self,song_id:str,output:str=STREAM_OUTPUT):
         #Returns a song bit stream and creates a que
         
