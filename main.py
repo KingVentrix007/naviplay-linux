@@ -25,31 +25,37 @@ async def main():
         cache_path="./cache.json"
     )
     await client.quick_init()
-    songs = await client._get_all_playlists()
-    # p1 = await client.get_playlist(songs[0])
-    # print(p1)
-#     play_song = songs[0]
-#     song_name = await client.get_song_name_by_id(play_song)
-#     print(f"main.py: Playing song: {song_name}")
-#     proc = await asyncio.create_subprocess_exec(
-#     "ffplay",
-#     "-nodisp",
-#     "-autoexit",
-#     "-i",
-#     "pipe:0",
-#     stdin=asyncio.subprocess.PIPE,
-#     stderr=asyncio.subprocess.DEVNULL,
-#     stdout=asyncio.subprocess.DEVNULL,
-# )
+    songs = await client.get_all_songs()
 
-#     stream = client.get_song_stream(play_song,STREAM_OUTPUT)
+    playlists = await client._get_all_playlists()
+    p0 = playlists[0]
+    
+    pod = await client.get_playlist_data(p0)
+    # print(pod)
+    play_songs = await client.get_songs_from_playlist(p0)
+    # print(play_songs)
+    play_song = play_songs[0]
+    song_name = await client.get_song_name_by_id(play_song)
+    print(f"main.py: Playing song: {song_name}")
+    proc = await asyncio.create_subprocess_exec(
+    "ffplay",
+    "-nodisp",
+    "-autoexit",
+    "-i",
+    "pipe:0",
+    stdin=asyncio.subprocess.PIPE,
+    stderr=asyncio.subprocess.DEVNULL,
+    stdout=asyncio.subprocess.DEVNULL,
+)
 
-#     async for chunk in stream:
-#         proc.stdin.write(chunk)
-#         await proc.stdin.drain()   # <-- critical
+    stream = client.stream_playlist(play_song,p0,STREAM_OUTPUT)
 
-#     proc.stdin.close()
-#     await proc.wait()
+    async for chunk in stream:
+        proc.stdin.write(chunk)
+        await proc.stdin.drain()   # <-- critical
+
+    proc.stdin.close()
+    await proc.wait()
 
 if __name__ == "__main__":
     asyncio.run(main())

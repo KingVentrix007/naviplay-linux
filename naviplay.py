@@ -76,7 +76,12 @@ class NavidromeClient:
             with open(self.cache_path,"w") as cache_file:
                 if(self.cache_data == None):
                     warnings.warn(f"self.cache_data is None. This should not happen. Refusing to overwrite file {self.cache_path}",stacklevel=2)
-                json.dump(self.cache_data,cache_file)
+                json.dump(
+    self.cache_data,
+    cache_file,
+    indent=4,
+    sort_keys=True
+)
         
     def _auth_params(self):
         salt = str(random.randint(1000, 9999))
@@ -153,10 +158,10 @@ class NavidromeClient:
                 timesPlayed =  self.cache_data["cachedSongs"][song.get("id","-1")].get("timesPlayed",0)
                 downLoaded =  self.cache_data["cachedSongs"][song.get("id","-1")].get("downloaded",False)
                 cache_path =  self.cache_data["cachedSongs"][song.get("id","-1")].get("cache_path",False)
-
+            # print(list(song.keys()))
             if(timesPlayed > 5 and downLoaded == False):
                 pass
-            cache_entry = {"title":song.get("title"),"id":song.get("id"),"coverArt":song.get("coverArt"),"artists":artists,"timesPlayed":timesPlayed,"downloaded":downLoaded,"cache_path":cache_path}
+            cache_entry = {"title":song.get("title"),"id":song.get("id"),"coverArt":song.get("coverArt"),"artists":artists,"timesPlayed":timesPlayed,"downloaded":downLoaded,"cache_path":cache_path,"playlist":"-1"}
             self.cache_data["cachedSongs"][song.get("id","-1")] = cache_entry
         logger.debug("Updating cache timestamp")
         self.cache_data["lastUpdate"] = await self._get_library_timestamp()
@@ -367,12 +372,14 @@ class NavidromeClient:
         # Gets a list of all the users playlists
         data = await self._call("getPlaylists")
         playlists_all_data =  data.get("playlists", {}).get("playlist", [])
-        # print(playlists)
+
         playlists = []
         for p in playlists_all_data:
             playlists.append(p.get("id",-1))
         if(playlists != []):
             return playlists
+       
+
     async def _get_playlist_data(self, playlist_id):
         if(playlist_id == -1):
             return []
@@ -380,8 +387,28 @@ class NavidromeClient:
             "getPlaylist",
             extra_params={"id": playlist_id}
         )
-        return data["playlist"]
-
+        play_list_data = data["playlist"]
+        cached_playlist_entry = self.cache_data.get("CachedPlaylists",{})
+        cached_playlist_entry[playlist_id] = []
+        tmp = cached_playlist_entry.get(playlist_id,[])
+        for song in play_list_data.get("entry"):
+             tmp.append(song.get("id","-1"))
+        
+        cached_playlist_entry[playlist_id] = tmp
+        self.cache_data["CachedPlaylists"] = cached_playlist_entry
+        await self._save_cache()
+        return play_list_data
+    async def _get_songs_from_playlist(self,playlist_id,re_call=False):
+        cached_playlist_entry = self.cache_data.get("CachedPlaylists",{})
+        if(playlist_id in cached_playlist_entry):
+            pass
+        else:
+            if(re_call == False):
+                await self._get_playlist_data(playlist_id,re_call = True)
+            else:
+                return None
+        songs = cached_playlist_entry.get(playlist_id,[])
+        return songs
 
     # ---------- High-level API ----------
     
@@ -527,3 +554,36 @@ class NavidromeClient:
         logger.debug(f"Done streaming song: {song_id} ")
     async def get_song_name_by_id(self,song_id):
         return self._get_song_name_by_id(song_id)
+    async def get_all_playlists(self):
+        return await self._get_all_playlists()
+    async def get_playlist_data(self,playlist_id):
+        return await self._get_playlist_data(playlist_id)
+    
+    async def stream_playlist(self,first_song_id,playlist_id,output=STREAM_OUTPUT):
+        r_out = self._validate_output_type(output)
+        if(r_out == FILE_OUTPUT):
+            with open("temp/output.mp3","wb") as f:
+                f.write(b"")
+        
+        songs_to_play_t = self.cache_data.get("CachedPlaylists",{}).get(playlist_id,[])
+        if(first_song_id not in songs_to_play_t):
+            warnings.warn(f"Sooo, this is awkward, but the song {await self.get_song_name_by_id(first_song_id)} isn't actually in this playlist. We will just play the playlist anyway tho",stacklevel=2)
+        else:
+            songs_to_play = [first_song_id]
+            songs_to_play.remove(first_song_id)
+            songs_to_play.extend(songs_to_play_t)
+        if(songs_to_play[0] != first_song_id):
+            print("ERROR")
+        for current_song_id in songs_to_play:
+            logger.debug(f"Streaming singular song: {current_song_id} from playlist: {playlist_id} to output: {output.replace("007","")}")
+            song_bit_stream = self._get_bit_stream(current_song_id)
+            async for chunk in song_bit_stream:
+                if(r_out == STREAM_OUTPUT):
+                    yield chunk
+                elif(r_out == CLI_OUTPUT):
+                    sys.stdout.buffer.write(chunk)
+                elif(r_out == FILE_OUTPUT):
+                    await self._write_to_output_file(chunk)
+            logger.debug(f"Done streaming song: {current_song_id} from playlist {playlist_id} ")
+    async def get_songs_from_playlist(self,playlist_id):
+        return await self._get_songs_from_playlist(playlist_id)
