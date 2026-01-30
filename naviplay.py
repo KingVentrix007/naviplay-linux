@@ -8,6 +8,8 @@ import aiofiles
 import sys
 import warnings
 import logging
+from typing import AsyncIterator
+
 STREAM_OUTPUT = "007stream007"
 CLI_OUTPUT = "007client007"
 FILE_OUTPUT = "007file007"
@@ -319,28 +321,29 @@ class NavidromeClient:
         self.songs = all_songs # Update global var
         return all_songs # Return all the song
     
-    async def _get_bit_stream(self, song_id:str, is_pre_pull:bool=False):
+    async def _get_bit_stream(self, song_id:str, is_pre_pull:bool=False) ->  AsyncIterator[bytes]:
 
-        # Get th
+        # Get the bit-stream for a specific song, pre-pull dictates wether or not we are preloading songs
         logger.debug(f"Getting bit stream for: {song_id}")
-        isdown, file = self._is_downloaded(song_id)
-        if isdown:
+        isdown, file = self._is_downloaded(song_id) # Check if song is downloaded and get path
+        if isdown: # If is downloaded
             logger.debug(f"Using downloaded file for: {song_id}")
             with open(file, "rb") as f:
-                while chunk := f.read(8192):
-                    yield chunk
+                while chunk := f.read(8192): #Read file
+                    yield chunk # Return data
             return
+        # Song is not downloaded
+        #TODO Replace with _call
+        stream_params = self._get_server_parmas() # get server parameters
+        stream_params["id"] = song_id # Add song id to server parameters
+        url = f"{self.base_url}/stream.view" # Create url
 
-        stream_params = self._get_server_parmas()
-        stream_params["id"] = song_id
-        url = f"{self.base_url}/stream.view"
-
-        if song_id in self.preloaded_songs and not is_pre_pull:
+        if song_id in self.preloaded_songs and not is_pre_pull: # Check if we can use a preloaded song 
             logger.debug(f"Using preloaded song for: {song_id}")
-            queue = self.preloaded_songs[song_id]
+            queue = self.preloaded_songs[song_id] # Get the que for this song
 
             while True:
-                chunk = await queue.get()
+                chunk = await queue.get() # read the data from the que
                 if chunk is None:
                     break
                 yield chunk
@@ -350,33 +353,42 @@ class NavidromeClient:
             return
 
         try:
-            async with  self.httpx_client.stream("GET", url, params=stream_params) as r:
+            #Song is either not preloaded or we are preloading a song
+            async with  self.httpx_client.stream("GET", url, params=stream_params) as r: # Request data from server
                 r.raise_for_status()
-                async for chunk in r.aiter_bytes(8192):
-                    yield chunk
-        except httpx.ReadTimeout:
-            if(is_pre_pull == True):
+                async for chunk in r.aiter_bytes(8192): 
+                    yield chunk # Return data
+        except httpx.ReadTimeout: # Catch timeout errors
+            if(is_pre_pull == True): # Check if we where preloading
                 logger.warning(f"Preloading song [{song_id}] failed with ReadTimeout error to url: {url}. retrying...",stacklevel=2)
                 try:
-                    async with  self.httpx_client.stream("GET", url, params=stream_params) as r:
+                    async with  self.httpx_client.stream("GET", url, params=stream_params) as r: # If preloading, tray again
                         r.raise_for_status()
                         async for chunk in r.aiter_bytes(8192):
                             yield chunk
-                except httpx.ReadTimeout:
-                     logger.error(f"Preloading  song [{song_id}] failed with ReadTimeout error to url: {url} again. Check that server is online",stacklevel=2)
+                except httpx.ReadTimeout: # Failed again
+                     logger.error(f"Preloading  song [{song_id}] failed with ReadTimeout error to url: {url} again. Check that server is online",stacklevel=2)#Error
                 
             else:
-                logger.error(f"Getting bit stream for song [{song_id}] failed with ReadTimeout error to url: {url}",stacklevel=2)
-    async def _write_to_output_file(self,data,first_write=False):
-        if(first_write == True):
+                logger.error(f"Getting bit stream for song [{song_id}] failed with ReadTimeout error to url: {url}",stacklevel=2) # Failed to pull live song, playback crashes so throw error
+        return
+    
+    async def _write_to_output_file(self,data:str,first_write:bool=False) -> bool:
+        #Write song data to the output file
+        #TODO Make this use a global constant or a variable
+        if(first_write == True): # Overwrite file
             with open("temp/output.mp3","wb") as f:
                 if(data == None):
-                    return
+                    return False
+                f.write(data) 
+            return True
+        else: # Add data to file
+            with open("temp/output.mp3","ab") as f:
                 f.write(data)
-        else:
-             with open("temp/output.mp3","ab") as f:
-                f.write(data)
-    def _match_output(self,string):
+            return True
+    
+    def _match_output(self,string:str)->tuple[str,str]|tuple[None,None]:
+        # Attempt to match users output spec to constants
         if string.lower() in CLI_OUTPUT.lower():
             return CLI_OUTPUT,"cli"
         elif string.lower() in FILE_OUTPUT.lower():
@@ -385,14 +397,16 @@ class NavidromeClient:
             return STREAM_OUTPUT,"stream"
         else:
             return None,None
-    def _validate_output_type(self,output):
+
+    def _validate_output_type(self,output:str) -> str:
         r_out = output
-        if(output[:3] != "007"):
-            warnings.warn("You have used a string to specify the output. This is not recommened as we may change the output types at a future date. To future proof your code, please use on of the constants we made", stacklevel=2)
-            out,t = self._match_output(r_out)
+        #TODO, make "007" a var
+        if(output[:3] != "007"): # Check if chosen output is a constant
+            warnings.warn("You have used a string to specify the output. This is not recommend as we may change the output types at a future date. To future proof your code, please use on of the constants we made", stacklevel=2)
+            out,t = self._match_output(r_out) # Check if we can match it to a constant
             if(out == None):
                 warnings.warn(f"We tried to match you input '{output}' to one of our formats but failed. We are defaulting to file output. And because you obviously didn't read the docs. That outout it temp/song.mp3",stacklevel=2)
-                r_out = FILE_OUTPUT
+                r_out = FILE_OUTPUT # Default output(Safest)
             else:
                 warnings.warn(f"We tried to match you input '{output}' to one of our formats and succeeded. You song data will be sent to output {t}. Was it worth being diffrent and ignoring the perfectly good, and future proofed constants we gave you? If you said yes, come back to this when your code stops working after a version update ",stacklevel=2)
         
@@ -400,222 +414,360 @@ class NavidromeClient:
         return r_out
     
 
-    async def _get_all_playlists(self):
+    async def _get_all_playlists(self)->list:
         # Gets a list of all the users playlists
-        data = await self._call("getPlaylists")
-        playlists_all_data =  data.get("playlists", {}).get("playlist", [])
+        data = await self._call("getPlaylists") # Call server API to get playlists
+        playlists_all_data =  data.get("playlists", {}).get("playlist", []) # Extract playlist data
 
-        playlists = []
+        playlists = [] # list to store list od playlist IDs
         for p in playlists_all_data:
-            playlists.append(p.get("id",-1))
-        if(playlists != []):
-            return playlists
+            playlists.append(p.get("id",'-1')) # append IDs to list
+        if(playlists != []):# Check if playlist is empty
+            return playlists # Return playlist
+        else:
+            #TODO Add some sort of error message
+            return [] # Return empty list
        
 
-    async def _get_playlist_data(self, playlist_id):
-        if(playlist_id == -1):
-            return []
-        data = await self._call(
+    async def _get_playlist_data(self, playlist_id:str)->dict:
+        if(playlist_id == "-1"): # Check playlist not invalid
+            return {} # Return empty dict
+        data = await self._call( 
             "getPlaylist",
             extra_params={"id": playlist_id}
-        )
-        play_list_data = data["playlist"]
-        cached_playlist_entry = self.cache_data.get("CachedPlaylists",{})
-        cached_playlist_entry[playlist_id] = []
-        tmp = cached_playlist_entry.get(playlist_id,[])
-        for song in play_list_data.get("entry"):
-             tmp.append(song.get("id","-1"))
+        )# Call server api to get specific playlist data
+        play_list_data = data["playlist"] # extract info from request
+        cached_playlist_entry = self.cache_data.get("CachedPlaylists",{}) # Get current playlist cache
+        cached_playlist_entry[playlist_id] = [] # add new entry
+        tmp = cached_playlist_entry.get(playlist_id,[]) # add new list of songs to new entry
+        for song in play_list_data.get("entry"):  # Loop through playlists songs got from API
+             tmp.append(song.get("id","-1")) # add song to playlist(or -1 if something goes wrong)
         
-        cached_playlist_entry[playlist_id] = tmp
-        self.cache_data["CachedPlaylists"] = cached_playlist_entry
-        await self._save_cache()
-        return play_list_data
-    async def _get_songs_from_playlist(self,playlist_id,re_call=False):
-        cached_playlist_entry = self.cache_data.get("CachedPlaylists",{})
-        if(playlist_id in cached_playlist_entry):
+        cached_playlist_entry[playlist_id] = tmp # Update entry
+        self.cache_data["CachedPlaylists"] = cached_playlist_entry # Add entry to cache
+        await self._save_cache() # Save cache
+        return play_list_data # Return playlist data
+
+    async def _get_songs_from_playlist(self,playlist_id:str,re_call:bool=False)->[]|None:
+        cached_playlist_entry = self.cache_data.get("CachedPlaylists",{}) # Get playlist cache entry
+        if(playlist_id in cached_playlist_entry): # Check if playlist is in cache
             pass
         else:
             if(re_call == False):
-                await self._get_playlist_data(playlist_id,re_call = True)
+                #TODO Should probably add some sort of time check to see if playlist changed since last fetch
+                await self._get_playlist_data(playlist_id,re_call = True) # Populate the cache with data for this playlist if not already cached
             else:
-                return None
-        songs = cached_playlist_entry.get(playlist_id,[])
-        return songs
+                return None # Return None
+        songs = cached_playlist_entry.get(playlist_id,[]) # Get songs from playlist
+        return songs # Return a list of song IDs
 
     # ---------- High-level API ----------
+    #These are the APIs the user calls
+    #TODO add each one to API.md
     
     
-    async def get_all_albums(self):
-        
-        albums = []
-        offset = 0
+    async def get_all_albums(self) -> list:
+        #Get all the albums
+        #TODO Optimize this function
+        albums = [] # list holding the albums
+        offset = 0 # Current fetch offset
 
-        while True:
-            resp = await self._call(
+        while True: # Got until break
+            resp = await self._call( 
                 "getAlbumList2",
                 {
                     "type": "alphabeticalByName",
-                    "size": self.page_size,
-                    "offset": offset,
+                    "size": self.page_size, #Max albums to fetch
+                    "offset": offset, # Current offset
                 },
-            )
+            )#Make call to API
 
-            batch = resp["albumList2"].get("album", [])
-            if not batch:
+            batch = resp["albumList2"].get("album", []) # Get data
+            if not batch: # If batch is empty break
                 break
 
-            albums.extend(batch)
-            offset += self.page_size
+            albums.extend(batch) # Extend list of albums
+            offset += self.page_size # update offset
 
-        return albums
+        return albums # Return album
 
-    async def get_album(self, album_id):
-        
-        resp = await self._call("getAlbum", {"id": album_id})
-        return resp["album"]
+    async def get_album(self, album_id:str)->dict:
+        # Get one specific albums data
+        resp = await self._call("getAlbum", {"id": album_id}) # API call
+        return resp["album"] # Return album data
 
-    async def get_songs_for_album(self, album_id):
-        
-        album = await self.get_album(album_id)
-        return album.get("song", [])
+    async def get_songs_for_album(self, album_id:str)->list:
+        # Get all the sings in the album
+        album = await self.get_album(album_id) # Get album data
+        return album.get("song", []) # Return list of songs. Note this is raw song data, not just IDs
 
     
-    async def get_all_songs(self):
-        cachedSongs = self.cache_data.get("cachedSongs",{})
-        if(cachedSongs == {}):
+    async def get_all_songs(self)->list:
+        #Get all the songs from cache
+        cachedSongs = self.cache_data.get("cachedSongs",{})#Extract cache data for songs
+        if(cachedSongs == {}): # Cache is empty
             logger.warning("Cache is empty")
         else:
-            songs = cachedSongs.keys()
-            return list(songs)
-    async def get_song_id(self,title):
-        
-        for song in self.songs:
-            if(song.get("title","invalid") == title):
-                return song.get("id",None)
+            songs = cachedSongs.keys() # Keys are song IDs
+            return list(songs) # convert to list
+
+    async def get_song_id(self,title:str)->str|None:
+        #Get a songs id from tile
+        warnings.warn("The 'warn' method is deprecated, "
+            "use 'warning' instead", DeprecationWarning, 2)
+        for song in self.songs: # loop through songs
+            if(song.get("title","invalid") == title): # Direct title match, inaccurate
+                return song.get("id",None) # Return ID or None
+        return None # Couldn't find song
     
-    async def get_cover_art(self,song_id):
-        
-        ca_file_path = self._get_song_cover(song_id)
-        if(ca_file_path == None):
+
+    async def get_cover_art(self,song_id:str)->bytes|None:
+        # get the actual bytes of a songs cover art
+        ca_file_path = self._get_song_cover(song_id) # Get path of song cover
+        if(ca_file_path == None): # Check is not NULL
             return None
-        with open(ca_file_path,"rb") as file:
-            return file.read()
-    def create_que(self,first_song_id):
+        with open(ca_file_path,"rb") as file: # Open to read byte
+            return file.read() # Read the whole file
+    def create_que(self,first_song_id:str)->None:
+        #Creates a song que from ALL the songs, with first_song_id as first song
+        #TODO Move to internal API.
+        #TODO Add warning about heavy function
         temp_q = [first_song_id]
-        for s in self.cache_data["cachedSongs"]:
-            if(s == first_song_id):
+        for s in self.cache_data["cachedSongs"]: # Loop through cached songs
+            if(s == first_song_id): # Skip fist song id
                 continue
-            temp_q.append(s)
-        self.que_list = temp_q
-    async def preload_next_song(self, song_id):
-        queue = asyncio.Queue()
-        self.preloaded_songs[song_id] = queue
-        self.preloaded_song_id = song_id
+            temp_q.append(s) # Create que
+        self.que_list = temp_q # make que accessible to all functions
+    
+    async def preload_next_song(self, song_id:str)->None:
+        #Creates a queue for this specific song ID
+        queue = asyncio.Queue() # Create asyncio Queue
+        self.preloaded_songs[song_id] = queue # Add to preloaded songs queue
         logger.debug(f"Preloading song {song_id}")
         try:
-            stream = self._get_bit_stream(song_id,is_pre_pull=True)
+            stream = self._get_bit_stream(song_id,is_pre_pull=True) # Stream song bites
             async for chunk in stream:
-                await queue.put(chunk)
+                await queue.put(chunk) # Add to queue
         finally:
-            await queue.put(None) 
+            await queue.put(None) # Add none to spec end of queue
 
             logger.debug(f"Completed Preloading song: {song_id}")
     
-    async def get_songs_stream(self,song_id:str,output:str=STREAM_OUTPUT):
-        #Returns a song bit stream and creates a que
+
+    async def get_songs_stream(
+    self,
+    song_id: str,
+    output: str = STREAM_OUTPUT
+) -> Generator | None:
+        """
+        Streams a song and then continues streaming queued songs.
         
+        - Supports multiple output modes:
+            STREAM_OUTPUT : yields chunks (for HTTP / async streaming)
+            CLI_OUTPUT    : writes raw bytes to stdout
+            FILE_OUTPUT   : writes bytes to temp/output.mp3
+        - Automatically preloads the next song in the queue.
+        """
+
+        # Validate and normalize the output type
         r_out = self._validate_output_type(output)
-        if(r_out == FILE_OUTPUT):
-            with open("temp/output.mp3","wb") as f:
+
+        # If output is a file, ensure it starts empty
+        if r_out == FILE_OUTPUT:
+            with open("temp/output.mp3", "wb") as f:
                 f.write(b"")
-        logger.debug(f"Streaming song: {song_id} to output: {output.replace("007","")}")
-        await self._update_timesPlayed(song_id)
-        if(song_id == None):
+
+        logger.debug(
+            f"Streaming song: {song_id} to output: {output.replace('007','')}"
+        )
+
+        # Safety check: do nothing if no song ID was provided
+        if song_id is None:
             return
+
+        # Update play count / analytics for this song
+        await self._update_timesPlayed(song_id)
+
+        # Get async generator yielding audio chunks
         song_bit_stream = self._get_bit_stream(song_id)
+
+        # Add this song to the playback queue
         self.create_que(song_id)
+
+        # If there is a next song queued, preload it asynchronously
         if len(self.que_list) > 1:
             asyncio.create_task(
                 self.preload_next_song(self.que_list[1])
             )
+
+        # Stream the first song
         async for chunk in song_bit_stream:
-            if(r_out == STREAM_OUTPUT):
+            if r_out == STREAM_OUTPUT:
                 yield chunk
-            elif(r_out == CLI_OUTPUT):
+            elif r_out == CLI_OUTPUT:
                 sys.stdout.buffer.write(chunk)
-            elif(r_out == FILE_OUTPUT):
+            elif r_out == FILE_OUTPUT:
                 await self._write_to_output_file(chunk)
-        logger.debug(f"Done streaming song: {song_id} ")
-        
-        for x in range(1,len(self.que_list)):
-            logger.debug(f"Streaming song: {song_id} to output: {output.replace("007","")}")
+
+        logger.debug(f"Done streaming song: {song_id}")
+
+        # Stream remaining songs in the queue sequentially
+        for x in range(1, len(self.que_list)):
+            logger.debug(
+                f"Streaming song: {song_id} to output: {output.replace('007','')}"
+            )
 
             current_song_id = self.que_list[x]
-            if(x+1 <=len(self.que_list)):
-                next_song_id = self.que_list[x+1]
+
+            # Determine which song to preload next (if any)
+            if x + 1 <= len(self.que_list):
+                next_song_id = self.que_list[x + 1]
             else:
-                next_song_id = -1
-            asyncio.create_task(self.preload_next_song(next_song_id))
+                next_song_id = -1  # Sentinel value for "no next song"
+
+            # Preload next song without blocking playback
+            asyncio.create_task(
+                self.preload_next_song(next_song_id)
+            )
+
+            # Get stream for current queued song
             song_bit_stream = self._get_bit_stream(current_song_id)
+
+            # Stream queued song
             async for chunk in song_bit_stream:
-                if(r_out == STREAM_OUTPUT):
+                if r_out == STREAM_OUTPUT:
                     yield chunk
-                elif(r_out == CLI_OUTPUT):
+                elif r_out == CLI_OUTPUT:
                     sys.stdout.buffer.write(chunk)
-                elif(r_out == FILE_OUTPUT):
+                elif r_out == FILE_OUTPUT:
                     await self._write_to_output_file(chunk)
 
-            logger.debug(f"Done streaming song: {song_id} ")
-    async def get_song_stream(self,song_id:str,output:str=STREAM_OUTPUT):
+            logger.debug(f"Done streaming song: {song_id}")
+
+
+    async def get_song_stream(
+        self,
+        song_id: str,
+        output: str = STREAM_OUTPUT
+    ):
+        """
+        Streams a single song only (no queue handling).
+        """
+
         r_out = self._validate_output_type(output)
-        if(r_out == FILE_OUTPUT):
-            with open("temp/output.mp3","wb") as f:
+
+        # Clear output file if writing to disk
+        if r_out == FILE_OUTPUT:
+            with open("temp/output.mp3", "wb") as f:
                 f.write(b"")
-        logger.debug(f"Streaming singular song: {song_id} to output: {output.replace("007","")}")
+
+        logger.debug(
+            f"Streaming singular song: {song_id} to output: {output.replace('007','')}"
+        )
+
+        # Update play statistics
         await self._update_timesPlayed(song_id)
-        if(song_id == None):
+
+        # Safety check
+        if song_id is None:
             return
+
+        # Get async chunk stream
         song_bit_stream = self._get_bit_stream(song_id)
+
+        # Stream song
         async for chunk in song_bit_stream:
-            if(r_out == STREAM_OUTPUT):
+            if r_out == STREAM_OUTPUT:
                 yield chunk
-            elif(r_out == CLI_OUTPUT):
+            elif r_out == CLI_OUTPUT:
                 sys.stdout.buffer.write(chunk)
-            elif(r_out == FILE_OUTPUT):
+            elif r_out == FILE_OUTPUT:
                 await self._write_to_output_file(chunk)
-        logger.debug(f"Done streaming song: {song_id} ")
-    async def get_song_name_by_id(self,song_id):
+
+        logger.debug(f"Done streaming song: {song_id}")
+
+
+    async def get_song_name_by_id(self, song_id):
+        """Returns the display name of a song by ID."""
         return self._get_song_name_by_id(song_id)
+
+
     async def get_all_playlists(self):
+        """Returns metadata for all playlists."""
         return await self._get_all_playlists()
-    async def get_playlist_data(self,playlist_id):
+
+
+    async def get_playlist_data(self, playlist_id):
+        """Returns playlist metadata and song list."""
         return await self._get_playlist_data(playlist_id)
-    
-    async def stream_playlist(self,first_song_id,playlist_id,output=STREAM_OUTPUT):
+
+
+    async def stream_playlist(
+        self,
+        first_song_id,
+        playlist_id,
+        output=STREAM_OUTPUT
+    ):
+        """
+        Streams an entire playlist, starting from a given song.
+        """
+
         r_out = self._validate_output_type(output)
-        if(r_out == FILE_OUTPUT):
-            with open("temp/output.mp3","wb") as f:
+
+        # Reset output file if needed
+        if r_out == FILE_OUTPUT:
+            with open("temp/output.mp3", "wb") as f:
                 f.write(b"")
-        
-        songs_to_play_t = self.cache_data.get("CachedPlaylists",{}).get(playlist_id,[])
-        if(first_song_id not in songs_to_play_t):
-            warnings.warn(f"Sooo, this is awkward, but the song {await self.get_song_name_by_id(first_song_id)} isn't actually in this playlist. We will just play the playlist anyway tho",stacklevel=2)
+
+        # Fetch cached playlist song IDs
+        songs_to_play_t = self.cache_data.get(
+            "CachedPlaylists", {}
+        ).get(playlist_id, [])
+
+        # Handle case where requested starting song is not in playlist
+        if first_song_id not in songs_to_play_t:
+            warnings.warn(
+                f"Sooo, this is awkward, but the song "
+                f"{await self.get_song_name_by_id(first_song_id)} "
+                f"isn't actually in this playlist. "
+                f"We will just play the playlist anyway tho",
+                stacklevel=2
+            )
+            songs_to_play = songs_to_play_t
         else:
+            # Reorder playlist so it starts from first_song_id
             songs_to_play = [first_song_id]
             songs_to_play.remove(first_song_id)
             songs_to_play.extend(songs_to_play_t)
-        if(songs_to_play[0] != first_song_id):
+
+        # Sanity check
+        if songs_to_play[0] != first_song_id:
             print("ERROR")
+
+        # Stream each song in playlist order
         for current_song_id in songs_to_play:
-            logger.debug(f"Streaming singular song: {current_song_id} from playlist: {playlist_id} to output: {output.replace("007","")}")
+            logger.debug(
+                f"Streaming singular song: {current_song_id} "
+                f"from playlist: {playlist_id} "
+                f"to output: {output.replace('007','')}"
+            )
+
             song_bit_stream = self._get_bit_stream(current_song_id)
+
             async for chunk in song_bit_stream:
-                if(r_out == STREAM_OUTPUT):
+                if r_out == STREAM_OUTPUT:
                     yield chunk
-                elif(r_out == CLI_OUTPUT):
+                elif r_out == CLI_OUTPUT:
                     sys.stdout.buffer.write(chunk)
-                elif(r_out == FILE_OUTPUT):
+                elif r_out == FILE_OUTPUT:
                     await self._write_to_output_file(chunk)
-            logger.debug(f"Done streaming song: {current_song_id} from playlist {playlist_id} ")
-    async def get_songs_from_playlist(self,playlist_id):
+
+            logger.debug(
+                f"Done streaming song: {current_song_id} "
+                f"from playlist {playlist_id}"
+            )
+
+
+    async def get_songs_from_playlist(self, playlist_id):
+        """Returns a list of song IDs belonging to a playlist."""
         return await self._get_songs_from_playlist(playlist_id)
